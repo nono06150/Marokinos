@@ -18,7 +18,7 @@ import urllib.parse
 import re
 
 APP_NAME = "MARIKONOS"
-APP_VERSION = "4.2"
+APP_VERSION = "4.3"
 
 LOGIN_EMAIL = "mohibabibi@gmail.com"
 LOGIN_PASSWORD = "momo"
@@ -77,7 +77,31 @@ def is_newer_version(remote, local):
     return tuple(a) > tuple(b)
 
 
+def mix_hex(a, b, t):
+    """Interpolate between two #RRGGBB colors."""
+    t = max(0.0, min(1.0, float(t)))
+    a = a.lstrip("#")
+    b = b.lstrip("#")
+    ar, ag, ab = int(a[0:2], 16), int(a[2:4], 16), int(a[4:6], 16)
+    br, bg, bb = int(b[0:2], 16), int(b[2:4], 16), int(b[4:6], 16)
+    r = round(ar + (br - ar) * t)
+    g = round(ag + (bg - ag) * t)
+    bl = round(ab + (bb - ab) * t)
+    return f"#{r:02x}{g:02x}{bl:02x}"
+
+
+def ease_out_cubic(t):
+    t = max(0.0, min(1.0, float(t)))
+    return 1.0 - (1.0 - t) ** 3
+
+
+def ease_in_out_quint(t):
+    t = max(0.0, min(1.0, float(t)))
+    return 16 * t**5 if t < 0.5 else 1 - ((-2*t + 2) ** 5) / 2
+
+
 class RoundButton(tk.Canvas):
+    """Premium animated button with hover interpolation + click ripple."""
     def __init__(self, master, text, command=None, width=210, height=48,
                  fill=RED, hover=RED_HOVER, outline=None,
                  font=("Segoe UI Semibold", 10), text_color="white"):
@@ -95,59 +119,167 @@ class RoundButton(tk.Canvas):
         self.outline = outline
         self.font = font
         self.text_color = text_color
+
         self.hovered = False
         self.disabled = False
+        self._hover_value = 0.0
+        self._hover_job = None
+        self._ripple_items = []
+
         self._draw()
+
         self.bind("<Enter>", self._enter)
         self.bind("<Leave>", self._leave)
         self.bind("<Button-1>", self._click)
 
     def rounded(self, x1, y1, x2, y2, r=14, **kw):
         pts = [
-            x1+r,y1, x2-r,y1, x2,y1, x2,y1+r,
-            x2,y2-r, x2,y2, x2-r,y2, x1+r,y2,
-            x1,y2, x1,y2-r, x1,y1+r, x1,y1
+            x1+r, y1, x2-r, y1, x2, y1, x2, y1+r,
+            x2, y2-r, x2, y2, x2-r, y2, x1+r, y2,
+            x1, y2, x1, y2-r, x1, y1+r, x1, y1
         ]
-        return self.create_polygon(pts, smooth=True, splinesteps=36, **kw)
+        return self.create_polygon(
+            pts, smooth=True, splinesteps=36, **kw
+        )
 
     def _draw(self):
-        self.delete("all")
+        self.delete("base")
+
         if self.disabled:
-            fill = "#252c37"
+            main = "#252c37"
             txt = "#6b7687"
         else:
-            fill = self.hover if self.hovered else self.fill
+            main = mix_hex(self.fill, self.hover, self._hover_value)
             txt = self.text_color
 
+        # Animated glow for primary red buttons.
         if not self.disabled and self.fill == RED:
-            for i in range(4, 0, -1):
-                p = 4 + i * 2
-                self.rounded(p, p, self.w-p, self.h-p, 14, fill=RED_DARK, outline="")
+            glow_strength = 0.35 + self._hover_value * 0.65
+            glow = mix_hex("#140910", "#42101f", glow_strength)
+            for i in range(5, 0, -1):
+                p = 3 + i * 2
+                self.rounded(
+                    p, p, self.w-p, self.h-p, 14,
+                    fill=glow, outline="", tags="base"
+                )
+
+        border = self.outline or (
+            mix_hex(BORDER, "#542034", self._hover_value)
+            if self.fill != RED else ""
+        )
 
         self.rounded(
             3, 3, self.w-3, self.h-3, 14,
-            fill=fill,
-            outline=self.outline or ""
+            fill=main, outline=border,
+            tags="base"
         )
+
+        # Fine highlight at the top gives the button more depth.
+        if not self.disabled:
+            shine = mix_hex(main, "#ffffff", 0.08 + self._hover_value * 0.06)
+            self.create_line(
+                18, 6, self.w-18, 6,
+                fill=shine, width=1,
+                tags="base"
+            )
+
         self.create_text(
             self.w/2, self.h/2,
             text=self.label,
             fill=txt,
-            font=self.font
+            font=self.font,
+            tags="base"
         )
+
+        self.tag_lower("base")
+
+    def _animate_hover(self, target):
+        if self._hover_job:
+            try:
+                self.after_cancel(self._hover_job)
+            except Exception:
+                pass
+            self._hover_job = None
+
+        start = self._hover_value
+        frames = 8
+
+        def step(i=0):
+            t = ease_out_cubic(i / frames)
+            self._hover_value = start + (target - start) * t
+            self._draw()
+
+            if i < frames:
+                self._hover_job = self.after(14, lambda: step(i + 1))
+            else:
+                self._hover_value = target
+                self._draw()
+                self._hover_job = None
+
+        step()
 
     def _enter(self, _):
         if not self.disabled:
             self.hovered = True
-            self._draw()
+            self._animate_hover(1.0)
 
     def _leave(self, _):
         self.hovered = False
-        self._draw()
+        self._animate_hover(0.0)
 
-    def _click(self, _):
-        if not self.disabled and self.command:
-            self.command()
+    def _click(self, event):
+        if self.disabled:
+            return
+
+        # Expanding click ring / ripple.
+        x = event.x
+        y = event.y
+        ripple = self.create_oval(
+            x-2, y-2, x+2, y+2,
+            outline="#ffffff",
+            width=1
+        )
+        self._ripple_items.append(ripple)
+
+        frames = 9
+
+        def ripple_step(i=0):
+            if not self.winfo_exists():
+                return
+            t = i / frames
+            radius = 4 + 40 * ease_out_cubic(t)
+            self.coords(
+                ripple,
+                x-radius, y-radius,
+                x+radius, y+radius
+            )
+            color = mix_hex("#ffffff", self.hover, t)
+            self.itemconfigure(ripple, outline=color)
+
+            if i < frames:
+                self.after(12, lambda: ripple_step(i + 1))
+            else:
+                try:
+                    self.delete(ripple)
+                except Exception:
+                    pass
+
+        ripple_step()
+
+        # Tiny press movement without physically shifting the widget.
+        old = self._hover_value
+        self._hover_value = 1.0
+        self._draw()
+        self.after(
+            75,
+            lambda: (
+                setattr(self, "_hover_value", old if not self.hovered else 1.0),
+                self._draw()
+            )
+        )
+
+        if self.command:
+            self.after(85, self.command)
 
     def set_text(self, text):
         self.label = text
@@ -254,55 +386,190 @@ class Toggle(tk.Canvas):
 
 
 class NavButton(tk.Frame):
+    """Animated sidebar item: hover fade, selection glow and active pulse."""
+    BASE_BG = "#090d13"
+    HOVER_BG = "#101620"
+    ACTIVE_BG = "#17101a"
+
     def __init__(self, master, icon, text, command):
-        super().__init__(master, bg="#090d13", height=44, cursor="hand2")
+        super().__init__(
+            master,
+            bg=self.BASE_BG,
+            height=46,
+            cursor="hand2"
+        )
         self.pack_propagate(False)
+
         self.command = command
         self.active = False
+        self._hover_value = 0.0
+        self._active_value = 0.0
+        self._anim_job = None
+        self._click_lock = False
 
-        self.bar = tk.Frame(self, bg="#090d13", width=3)
+        self.bar = tk.Frame(self, bg=self.BASE_BG, width=3)
         self.bar.pack(side="left", fill="y")
 
         self.icon = tk.Label(
-            self, text=icon, fg=MUTED, bg="#090d13",
-            font=("Segoe UI", 10), width=3, cursor="hand2"
+            self,
+            text=icon,
+            fg=MUTED,
+            bg=self.BASE_BG,
+            font=("Segoe UI", 10),
+            width=3,
+            cursor="hand2"
         )
         self.icon.pack(side="left", padx=(9, 0))
 
         self.label = tk.Label(
-            self, text=text, fg=MUTED, bg="#090d13",
-            font=("Segoe UI", 9), cursor="hand2"
+            self,
+            text=text,
+            fg=MUTED,
+            bg=self.BASE_BG,
+            font=("Segoe UI", 9),
+            cursor="hand2"
         )
         self.label.pack(side="left")
 
-        for widget in (self, self.icon, self.label):
-            widget.bind("<Button-1>", lambda e: self.command())
+        self.dot = tk.Label(
+            self,
+            text="●",
+            fg=self.BASE_BG,
+            bg=self.BASE_BG,
+            font=("Segoe UI", 7),
+            cursor="hand2"
+        )
+        self.dot.pack(side="right", padx=13)
+
+        for widget in (
+            self, self.icon, self.label, self.dot
+        ):
+            widget.bind("<Button-1>", self._pressed)
             widget.bind("<Enter>", self._enter)
             widget.bind("<Leave>", self._leave)
 
+        self._render_state()
+
+    def _render_state(self):
+        # Active value takes precedence over hover value.
+        if self.active:
+            bg = mix_hex(self.BASE_BG, self.ACTIVE_BG, self._active_value)
+            icon_fg = mix_hex(MUTED, RED, self._active_value)
+            label_fg = mix_hex(MUTED, TEXT, self._active_value)
+            dot_fg = mix_hex(bg, RED, self._active_value)
+            bar_fg = mix_hex(bg, RED, self._active_value)
+        else:
+            bg = mix_hex(self.BASE_BG, self.HOVER_BG, self._hover_value)
+            icon_fg = mix_hex(MUTED, TEXT, self._hover_value)
+            label_fg = mix_hex(MUTED, TEXT, self._hover_value)
+            dot_fg = bg
+            bar_fg = bg
+
+        self.configure(bg=bg)
+        self.icon.configure(bg=bg, fg=icon_fg)
+        self.label.configure(
+            bg=bg,
+            fg=label_fg,
+            font=(
+                "Segoe UI Semibold" if self.active else "Segoe UI",
+                9
+            )
+        )
+        self.dot.configure(bg=bg, fg=dot_fg)
+        self.bar.configure(
+            bg=bar_fg,
+            width=5 if self.active else 3
+        )
+
+    def _animate(self, attr, target, frames=9):
+        if self._anim_job:
+            try:
+                self.after_cancel(self._anim_job)
+            except Exception:
+                pass
+            self._anim_job = None
+
+        start = getattr(self, attr)
+
+        def frame(i=0):
+            t = ease_out_cubic(i / frames)
+            setattr(self, attr, start + (target - start) * t)
+            self._render_state()
+
+            if i < frames:
+                self._anim_job = self.after(
+                    13, lambda: frame(i + 1)
+                )
+            else:
+                setattr(self, attr, target)
+                self._render_state()
+                self._anim_job = None
+
+        frame()
+
     def _enter(self, _):
         if not self.active:
-            self.configure(bg="#101620")
-            self.icon.configure(bg="#101620", fg=TEXT)
-            self.label.configure(bg="#101620", fg=TEXT)
+            self._animate("_hover_value", 1.0, 7)
 
     def _leave(self, _):
         if not self.active:
-            self.configure(bg="#090d13")
-            self.icon.configure(bg="#090d13", fg=MUTED)
-            self.label.configure(bg="#090d13", fg=MUTED)
+            self._animate("_hover_value", 0.0, 7)
 
-    def set_active(self, active):
+    def _pressed(self, _):
+        if self._click_lock:
+            return
+
+        self._click_lock = True
+
+        # Flash selection before the page transition begins.
+        previous_active = self._active_value
+        self._active_value = 1.0
+        self._render_state()
+
+        def finish():
+            self._click_lock = False
+            if not self.active:
+                self._active_value = previous_active
+                self._render_state()
+            self.command()
+
+        self.after(75, finish)
+
+    def set_active(self, active, animate=True):
+        changed = active != self.active
         self.active = active
-        bg = "#15101a" if active else "#090d13"
-        self.configure(bg=bg)
-        self.icon.configure(bg=bg, fg=RED if active else MUTED)
-        self.label.configure(
-            bg=bg,
-            fg=TEXT if active else MUTED,
-            font=("Segoe UI Semibold" if active else "Segoe UI", 9)
-        )
-        self.bar.configure(bg=RED if active else bg)
+
+        if active:
+            self._hover_value = 0.0
+            if animate and changed:
+                self._active_value = 0.0
+                self._animate("_active_value", 1.0, 10)
+                self.pulse()
+            else:
+                self._active_value = 1.0
+                self._render_state()
+        else:
+            if animate and changed:
+                self._animate("_active_value", 0.0, 7)
+            else:
+                self._active_value = 0.0
+                self._render_state()
+
+    def pulse(self):
+        """Short glow pulse when an item becomes selected."""
+        def expand(i=0):
+            if not self.active:
+                return
+            widths = [5, 7, 9, 7, 5]
+            if i >= len(widths):
+                return
+            self.bar.configure(width=widths[i])
+            self.dot.configure(
+                font=("Segoe UI Semibold", 8 if i == 2 else 7)
+            )
+            self.after(35, lambda: expand(i + 1))
+
+        expand()
 
 
 class MarikonosV4(tk.Tk):
@@ -1435,7 +1702,9 @@ class MarikonosV4(tk.Tk):
     # ========================================================
 
     def build_app(self, page="dashboard"):
-        self.active_page = page
+        self.active_page = None
+        self._page_transitioning = False
+        self._queued_page = None
         self.clear_stage()
 
         root = tk.Frame(self.stage, bg=BG)
@@ -1479,7 +1748,7 @@ class MarikonosV4(tk.Tk):
             mascot_mini, image=self.logo_small, bg=PANEL_2
         ).pack(pady=(13, 7))
         tk.Label(
-            mascot_mini, text="MARIKONOS V4",
+            mascot_mini, text=f"MARIKONOS {APP_VERSION}",
             fg=TEXT, bg=PANEL_2,
             font=("Segoe UI Semibold", 8)
         ).pack()
@@ -1510,11 +1779,7 @@ class MarikonosV4(tk.Tk):
 
         self.switch_page(page)
 
-    def switch_page(self, page):
-        self.active_page = page
-        for key, button in self.nav.items():
-            button.set_active(key == page)
-
+    def _render_page(self, page):
         for child in self.page_host.winfo_children():
             child.destroy()
 
@@ -1526,6 +1791,266 @@ class MarikonosV4(tk.Tk):
             self.page_mascot()
         elif page == "settings":
             self.page_settings()
+
+        self.active_page = page
+
+    def switch_page(self, page):
+        # Ignore exact duplicate clicks but still give the selected
+        # sidebar item a little visual pulse.
+        if (
+            self.active_page == page
+            and self.page_host.winfo_children()
+            and not getattr(self, "_page_transitioning", False)
+        ):
+            button = self.nav.get(page)
+            if button:
+                button.pulse()
+            self._page_arrival_fx()
+            return
+
+        # If the user clicks very quickly, remember only the last page.
+        if getattr(self, "_page_transitioning", False):
+            self._queued_page = page
+            return
+
+        for key, button in self.nav.items():
+            button.set_active(key == page, animate=True)
+
+        # First page can render instantly.
+        if not self.page_host.winfo_children():
+            self._render_page(page)
+            self._page_arrival_fx()
+            return
+
+        self._page_transitioning = True
+        self._queued_page = None
+
+        self.page_host.update_idletasks()
+        width = max(640, self.page_host.winfo_width())
+        height = max(480, self.page_host.winfo_height())
+
+        overlay = tk.Canvas(
+            self.page_host,
+            bg=BG,
+            bd=0,
+            highlightthickness=0
+        )
+        overlay.place(
+            x=0, y=0,
+            relwidth=1, relheight=1
+        )
+        overlay.lift()
+
+        # Six horizontal shutters slide in with staggered timing.
+        bands = []
+        colors = [
+            "#070a10",
+            "#0b0f16",
+            "#111722",
+            "#0b0f16",
+            "#090d13",
+            "#120b12",
+        ]
+        band_h = height / len(colors)
+
+        for i, color in enumerate(colors):
+            y1 = i * band_h
+            y2 = (i + 1) * band_h + 1
+            item = overlay.create_rectangle(
+                width, y1,
+                width * 2, y2,
+                fill=color,
+                outline=""
+            )
+            bands.append((item, i, y1, y2))
+
+        # Neon scan edge that follows the shutters.
+        scan = overlay.create_rectangle(
+            width - 3, 0,
+            width + 3, height,
+            fill=RED,
+            outline=""
+        )
+
+        frames = 18
+
+        def cover(frame=0):
+            global_t = frame / frames
+
+            edge_x = width
+
+            for item, idx, y1, y2 in bands:
+                delay = idx * 0.045
+                local = (global_t - delay) / max(
+                    0.001, 1.0 - delay
+                )
+                local = max(0.0, min(1.0, local))
+                eased = ease_in_out_quint(local)
+                x = width * (1.0 - eased)
+                edge_x = min(edge_x, x)
+                overlay.coords(
+                    item,
+                    x, y1,
+                    x + width + 8, y2
+                )
+
+            overlay.coords(
+                scan,
+                max(0, edge_x - 2), 0,
+                min(width, edge_x + 4), height
+            )
+
+            if frame < frames:
+                self.after(12, lambda: cover(frame + 1))
+                return
+
+            # Content is swapped while completely hidden.
+            self._render_page(page)
+
+            # Small hold makes the transition feel intentional.
+            self.after(45, lambda: reveal(0))
+
+        def reveal(frame=0):
+            global_t = frame / frames
+            last_edge = 0
+
+            for item, idx, y1, y2 in bands:
+                # Reverse stagger for a cleaner "wave" reveal.
+                reverse_idx = len(bands) - 1 - idx
+                delay = reverse_idx * 0.035
+                local = (global_t - delay) / max(
+                    0.001, 1.0 - delay
+                )
+                local = max(0.0, min(1.0, local))
+                eased = ease_in_out_quint(local)
+                x = -width * eased
+                last_edge = min(last_edge, x)
+                overlay.coords(
+                    item,
+                    x, y1,
+                    x + width + 8, y2
+                )
+
+            line_x = width * (1.0 - global_t)
+            overlay.coords(
+                scan,
+                line_x - 2, 0,
+                line_x + 4, height
+            )
+
+            if frame < frames:
+                self.after(12, lambda: reveal(frame + 1))
+                return
+
+            try:
+                overlay.destroy()
+            except Exception:
+                pass
+
+            self._page_transitioning = False
+            self._page_arrival_fx()
+
+            queued = self._queued_page
+            self._queued_page = None
+            if queued and queued != self.active_page:
+                self.after(
+                    55,
+                    lambda q=queued: self.switch_page(q)
+                )
+
+        cover()
+
+    def _page_arrival_fx(self):
+        """Fast neon sweep after every page appears."""
+        if not hasattr(self, "page_host"):
+            return
+
+        self.page_host.update_idletasks()
+        width = max(500, self.page_host.winfo_width())
+        height = max(300, self.page_host.winfo_height())
+
+        fx = tk.Canvas(
+            self.page_host,
+            bg=BG,
+            bd=0,
+            highlightthickness=0
+        )
+        fx.configure(bg="")
+        fx.place(
+            x=0, y=0,
+            relwidth=1, relheight=1
+        )
+        fx.lift()
+
+        # Tk canvas cannot be truly transparent, so only draw thin
+        # geometry and remove the canvas very quickly.
+        try:
+            fx.configure(bg=self.page_host["bg"])
+        except Exception:
+            pass
+
+        # Thin top scan line + corner brackets.
+        top_line = fx.create_rectangle(
+            0, 0, 0, 2,
+            fill=RED,
+            outline=""
+        )
+        right_line = fx.create_rectangle(
+            width-2, 0,
+            width, 0,
+            fill="#3b1730",
+            outline=""
+        )
+
+        # Center diamond briefly flashes.
+        cx, cy = width / 2, height / 2
+        diamond = fx.create_polygon(
+            cx, cy-5,
+            cx+5, cy,
+            cx, cy+5,
+            cx-5, cy,
+            outline="#512039",
+            fill=""
+        )
+
+        steps = 12
+
+        def animate(i=0):
+            t = ease_out_cubic(i / steps)
+            fx.coords(
+                top_line,
+                0, 0,
+                width * t, 2
+            )
+            fx.coords(
+                right_line,
+                width-2, 0,
+                width, height * t
+            )
+
+            size = 5 + 34 * t
+            fx.coords(
+                diamond,
+                cx, cy-size,
+                cx+size, cy,
+                cx, cy+size,
+                cx-size, cy
+            )
+
+            if i < steps:
+                self.after(
+                    12,
+                    lambda: animate(i + 1)
+                )
+            else:
+                self.after(
+                    45,
+                    lambda: fx.destroy()
+                    if fx.winfo_exists() else None
+                )
+
+        animate()
+
 
     # ========================================================
     # Dashboard
