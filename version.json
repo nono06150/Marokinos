@@ -1,6 +1,6 @@
 {
-  "version": "4.3",
-  "download_url": "https://github.com/nono06150/Marokinos/releases/download/v4.3/marikonos_launcher.exe",
-  "sha256": "272b0386947ee9ae0da4b183f192c5f9f07f16a2df71104e0ac993a8ebdd90c3",
-  "changelog": "MARIKONOS V4.3 - transitions cinematiques entre les pages, boutons animes, ripple au clic, sidebar avec glow et selection animee."
+  "version": "4.3.1",
+  "download_url": "https://github.com/nono06150/Marokinos/releases/download/v4.3.1/marikonos_launcher.exe",
+  "sha256": "",
+  "changelog": "MARIKONOS V4.3.1 - popup d'update premium, corrections de l'auto-updater, transitions cinematiques, boutons animes et interface plus fluide."
 }
