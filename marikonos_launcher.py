@@ -18,7 +18,7 @@ import urllib.parse
 import re
 
 APP_NAME = "MARIKONOS"
-APP_VERSION = "4.3"
+APP_VERSION = "4.3.1"
 
 LOGIN_EMAIL = "mohibabibi@gmail.com"
 LOGIN_PASSWORD = "momo"
@@ -1753,7 +1753,7 @@ class MarikonosV4(tk.Tk):
             font=("Segoe UI Semibold", 8)
         ).pack()
         tk.Label(
-            mascot_mini, text="Premium build",
+            mascot_mini, text=f"Version {APP_VERSION}",
             fg=MUTED, bg=PANEL_2,
             font=("Segoe UI", 7)
         ).pack(pady=(2, 12))
@@ -1975,7 +1975,6 @@ class MarikonosV4(tk.Tk):
             bd=0,
             highlightthickness=0
         )
-        fx.configure(bg="")
         fx.place(
             x=0, y=0,
             relwidth=1, relheight=1
@@ -2580,7 +2579,7 @@ class MarikonosV4(tk.Tk):
                         0,
                         lambda: messagebox.showinfo(
                             APP_NAME,
-                            f"MARIKONOS est déjà à jour.\\n\\nVersion : {APP_VERSION}",
+                            f"MARIKONOS est déjà à jour.\n\nVersion : {APP_VERSION}",
                         ),
                     )
 
@@ -2594,8 +2593,8 @@ class MarikonosV4(tk.Tk):
                     0,
                     lambda: messagebox.showerror(
                         APP_NAME,
-                        "Impossible de vérifier les mises à jour.\\n\\n"
-                        f"{message}\\n\\n"
+                        "Impossible de vérifier les mises à jour.\n\n"
+                        f"{message}\n\n"
                         "Si ton dépôt GitHub est privé, passe-le en Public "
                         "ou utilise un serveur d'update authentifié.",
                     ),
@@ -2611,7 +2610,8 @@ class MarikonosV4(tk.Tk):
             return
 
         self.update_prompt_open = True
-        remote = manifest.get("version", "?")
+
+        remote = str(manifest.get("version", "?")).strip()
         changelog = str(manifest.get("changelog", "")).strip()
         download_url = str(manifest.get("download_url", "")).strip()
 
@@ -2624,20 +2624,252 @@ class MarikonosV4(tk.Tk):
             )
             return
 
-        message = (
-            f"Une nouvelle version de MARIKONOS est disponible.\\n\\n"
-            f"Version actuelle : {APP_VERSION}\\n"
-            f"Nouvelle version : {remote}\\n"
+        # --------------------------------------------------------
+        # Custom MARIKONOS update dialog
+        # --------------------------------------------------------
+        dialog = tk.Toplevel(self)
+        dialog.overrideredirect(True)
+        dialog.configure(bg="#222b38")
+        dialog.transient(self)
+
+        dialog_w = 610
+        dialog_h = 390
+
+        self.update_idletasks()
+
+        root_x = self.winfo_rootx()
+        root_y = self.winfo_rooty()
+        root_w = max(self.winfo_width(), WIN_W)
+        root_h = max(self.winfo_height(), WIN_H)
+
+        pos_x = root_x + max(0, (root_w - dialog_w) // 2)
+        pos_y = root_y + max(0, (root_h - dialog_h) // 2)
+
+        dialog.geometry(
+            f"{dialog_w}x{dialog_h}+{pos_x}+{pos_y}"
         )
-        if changelog:
-            message += f"\\nNouveautés :\\n{changelog}\\n"
-        message += "\\nTélécharger et installer maintenant ?"
 
-        install = messagebox.askyesno(APP_NAME, message)
-        self.update_prompt_open = False
+        outer = tk.Frame(
+            dialog,
+            bg=PANEL,
+            highlightbackground="#303a49",
+            highlightthickness=1,
+        )
+        outer.pack(fill="both", expand=True, padx=1, pady=1)
 
-        if install:
-            self._start_update_download(manifest)
+        # Top accent
+        tk.Frame(
+            outer,
+            bg=RED,
+            height=3,
+        ).pack(fill="x")
+
+        header = tk.Frame(outer, bg=PANEL)
+        header.pack(fill="x", padx=24, pady=(19, 10))
+
+        icon_shell = tk.Frame(
+            header,
+            bg=PANEL_3,
+            width=58,
+            height=58,
+            highlightbackground=BORDER,
+            highlightthickness=1,
+        )
+        icon_shell.pack(side="left")
+        icon_shell.pack_propagate(False)
+
+        tk.Label(
+            icon_shell,
+            image=self.logo_small,
+            bg=PANEL_3,
+        ).place(relx=0.5, rely=0.5, anchor="center")
+
+        htext = tk.Frame(header, bg=PANEL)
+        htext.pack(side="left", fill="x", expand=True, padx=(15, 0))
+
+        tk.Label(
+            htext,
+            text="NOUVELLE VERSION DISPONIBLE",
+            fg=RED,
+            bg=PANEL,
+            font=("Segoe UI Semibold", 8),
+        ).pack(anchor="w")
+
+        tk.Label(
+            htext,
+            text=f"MARIKONOS {remote}",
+            fg=TEXT,
+            bg=PANEL,
+            font=("Segoe UI Semibold", 20),
+        ).pack(anchor="w", pady=(2, 0))
+
+        close_btn = tk.Label(
+            header,
+            text="✕",
+            fg=MUTED,
+            bg=PANEL,
+            font=("Segoe UI", 11),
+            cursor="hand2",
+            padx=8,
+            pady=5,
+        )
+        close_btn.pack(side="right", anchor="n")
+
+        versions = tk.Frame(
+            outer,
+            bg="#0a0f16",
+            highlightbackground=BORDER,
+            highlightthickness=1,
+        )
+        versions.pack(fill="x", padx=24, pady=(2, 12))
+
+        left_v = tk.Frame(versions, bg="#0a0f16")
+        left_v.pack(side="left", fill="x", expand=True, padx=16, pady=12)
+
+        tk.Label(
+            left_v,
+            text="VERSION ACTUELLE",
+            fg=DIM,
+            bg="#0a0f16",
+            font=("Segoe UI Semibold", 7),
+        ).pack(anchor="w")
+
+        tk.Label(
+            left_v,
+            text=APP_VERSION,
+            fg=MUTED,
+            bg="#0a0f16",
+            font=("Segoe UI Semibold", 12),
+        ).pack(anchor="w", pady=(3, 0))
+
+        arrow = tk.Label(
+            versions,
+            text="→",
+            fg=RED,
+            bg="#0a0f16",
+            font=("Segoe UI Semibold", 17),
+        )
+        arrow.pack(side="left", padx=12)
+
+        right_v = tk.Frame(versions, bg="#0a0f16")
+        right_v.pack(side="left", fill="x", expand=True, padx=16, pady=12)
+
+        tk.Label(
+            right_v,
+            text="NOUVELLE VERSION",
+            fg=DIM,
+            bg="#0a0f16",
+            font=("Segoe UI Semibold", 7),
+        ).pack(anchor="w")
+
+        tk.Label(
+            right_v,
+            text=remote,
+            fg=GREEN,
+            bg="#0a0f16",
+            font=("Segoe UI Semibold", 12),
+        ).pack(anchor="w", pady=(3, 0))
+
+        notes_card = tk.Frame(
+            outer,
+            bg=PANEL_2,
+            highlightbackground=BORDER,
+            highlightthickness=1,
+        )
+        notes_card.pack(fill="both", expand=True, padx=24)
+
+        tk.Label(
+            notes_card,
+            text="NOUVEAUTÉS",
+            fg=TEXT,
+            bg=PANEL_2,
+            font=("Segoe UI Semibold", 8),
+        ).pack(anchor="w", padx=14, pady=(12, 4))
+
+        shown_notes = changelog or "Corrections et améliorations générales."
+
+        tk.Label(
+            notes_card,
+            text=shown_notes,
+            fg=MUTED,
+            bg=PANEL_2,
+            font=("Segoe UI", 9),
+            justify="left",
+            anchor="nw",
+            wraplength=520,
+        ).pack(
+            anchor="w",
+            fill="both",
+            expand=True,
+            padx=14,
+            pady=(0, 12),
+        )
+
+        actions = tk.Frame(outer, bg=PANEL)
+        actions.pack(fill="x", padx=24, pady=(15, 19))
+
+        def close_update_prompt():
+            self.update_prompt_open = False
+            try:
+                dialog.grab_release()
+            except tk.TclError:
+                pass
+            try:
+                dialog.destroy()
+            except tk.TclError:
+                pass
+
+        def install_update():
+            self.update_prompt_open = False
+            try:
+                dialog.grab_release()
+            except tk.TclError:
+                pass
+            try:
+                dialog.destroy()
+            except tk.TclError:
+                pass
+
+            self.after(
+                90,
+                lambda: self._start_update_download(manifest)
+            )
+
+        RoundButton(
+            actions,
+            "PLUS TARD",
+            close_update_prompt,
+            width=150,
+            height=45,
+            fill=PANEL_3,
+            hover="#202a38",
+            outline=BORDER,
+        ).pack(side="right")
+
+        RoundButton(
+            actions,
+            "INSTALLER MAINTENANT",
+            install_update,
+            width=210,
+            height=45,
+        ).pack(side="right", padx=(0, 9))
+
+        close_btn.bind(
+            "<Button-1>",
+            lambda e: close_update_prompt()
+        )
+        close_btn.bind(
+            "<Enter>",
+            lambda e: close_btn.configure(fg=RED)
+        )
+        close_btn.bind(
+            "<Leave>",
+            lambda e: close_btn.configure(fg=MUTED)
+        )
+
+        dialog.protocol("WM_DELETE_WINDOW", close_update_prompt)
+        dialog.grab_set()
+        dialog.focus_force()
 
     def _start_update_download(self, manifest):
         if self.update_in_progress:
@@ -2655,7 +2887,7 @@ class MarikonosV4(tk.Tk):
 
         tk.Label(
             win,
-            text=f"Installing MARIKONOS {manifest.get('version', '')}",
+            text=f"Installation de MARIKONOS {manifest.get('version', '')}",
             fg=TEXT,
             bg=PANEL,
             font=("Segoe UI Semibold", 15),
@@ -2663,7 +2895,7 @@ class MarikonosV4(tk.Tk):
 
         self.update_progress_text = tk.Label(
             win,
-            text="Connecting to GitHub…",
+            text="Connexion à GitHub…",
             fg=MUTED,
             bg=PANEL,
             font=("Segoe UI", 9),
@@ -2734,14 +2966,14 @@ class MarikonosV4(tk.Tk):
                             self.after(
                                 0,
                                 lambda p=percent: self._set_update_progress(
-                                    p, "Downloading update…"
+                                    p, "Téléchargement de la mise à jour…"
                                 ),
                             )
                         else:
                             self.after(
                                 0,
                                 lambda: self._set_update_progress(
-                                    25, "Downloading update…"
+                                    25, "Téléchargement de la mise à jour…"
                                 ),
                             )
 
@@ -2750,7 +2982,7 @@ class MarikonosV4(tk.Tk):
                 self.after(
                     0,
                     lambda: self._set_update_progress(
-                        92, "Verifying SHA-256…"
+                        92, "Vérification SHA-256…"
                     ),
                 )
                 actual_hash = hashlib.sha256(temp_path.read_bytes()).hexdigest()
@@ -2762,7 +2994,7 @@ class MarikonosV4(tk.Tk):
             self.after(
                 0,
                 lambda: self._set_update_progress(
-                    100, "Download complete. Restarting…"
+                    100, "Téléchargement terminé. Redémarrage…"
                 ),
             )
             self.after(
@@ -2810,7 +3042,7 @@ class MarikonosV4(tk.Tk):
 
         messagebox.showerror(
             APP_NAME,
-            "La mise à jour a échoué.\\n\\n" + message,
+            "La mise à jour a échoué.\n\n" + message,
         )
 
     def _install_downloaded_update(self, downloaded_file, manifest, progress_window):
@@ -2825,8 +3057,8 @@ class MarikonosV4(tk.Tk):
                 pass
             messagebox.showinfo(
                 APP_NAME,
-                "Le téléchargement est terminé.\\n\\n"
-                f"Fichier : {downloaded_file}\\n\\n"
+                "Le téléchargement est terminé.\n\n"
+                f"Fichier : {downloaded_file}\n\n"
                 "Le remplacement automatique de cette version est configuré "
                 "pour Windows.",
             )
@@ -2844,20 +3076,20 @@ class MarikonosV4(tk.Tk):
             )
 
         batch = (
-            "@echo off\\n"
-            "setlocal\\n"
-            "set /a TRY=0\\n"
-            ":WAIT_FOR_APP\\n"
-            "timeout /t 1 /nobreak >nul\\n"
-            f'copy /Y "{downloaded_file}" "{current_file}" >nul 2>&1\\n'
-            "if errorlevel 1 (\\n"
-            "    set /a TRY+=1\\n"
-            "    if %TRY% LSS 30 goto WAIT_FOR_APP\\n"
-            "    exit /b 1\\n"
-            ")\\n"
-            f'del /Q "{downloaded_file}" >nul 2>&1\\n'
-            f"{launch_line}\\n"
-            'del "%~f0"\\n'
+            "@echo off\n"
+            "setlocal\n"
+            "set /a TRY=0\n"
+            ":WAIT_FOR_APP\n"
+            "timeout /t 1 /nobreak >nul\n"
+            f'copy /Y "{downloaded_file}" "{current_file}" >nul 2>&1\n'
+            "if errorlevel 1 (\n"
+            "    set /a TRY+=1\n"
+            "    if %TRY% LSS 30 goto WAIT_FOR_APP\n"
+            "    exit /b 1\n"
+            ")\n"
+            f'del /Q "{downloaded_file}" >nul 2>&1\n'
+            f"{launch_line}\n"
+            'del "%~f0"\n'
         )
 
         helper.write_text(batch, encoding="utf-8")
