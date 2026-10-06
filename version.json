@@ -1,8 +1,8 @@
 {
   "version": "4.3.2",
-  "tag": "v4.3.2",
+  "tag": "4.3.2",
   "asset_name": "marikonos_launcher.exe",
-  "download_url": "https://github.com/nono06150/Marokinos/releases/download/v4.3.2/marikonos_launcher.exe",
+  "download_url": "https://github.com/nono06150/Marokinos/releases/download/4.3.2/marikonos_launcher.exe",
   "sha256": "272b0386947ee9ae0da4b183f192c5f9f07f16a2df71104e0ac993a8ebdd90c3",
-  "changelog": "MARIKONOS V4.3.2 - correction HTTP 404, recherche automatique de l'EXE dans les Assets GitHub, auto-updater plus robuste."
+  "changelog": "MARIKONOS V4.3.2 - correction auto-updater."
 }
