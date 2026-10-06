@@ -18,7 +18,7 @@ import urllib.parse
 import re
 
 APP_NAME = "MARIKONOS"
-APP_VERSION = "4.3.1"
+APP_VERSION = "4.3.2"
 
 LOGIN_EMAIL = "mohibabibi@gmail.com"
 LOGIN_PASSWORD = "momo"
@@ -38,6 +38,11 @@ UPDATE_MANIFEST_URL = (
     "nono06150/Marokinos/main/version.json"
 )
 UPDATE_TIMEOUT = 8
+
+# GitHub public repository used by the updater.
+GITHUB_REPOSITORY = "nono06150/Marokinos"
+GITHUB_API_BASE = f"https://api.github.com/repos/{GITHUB_REPOSITORY}"
+DEFAULT_UPDATE_ASSET = "marikonos_launcher.exe"
 
 WIN_W = 1320
 WIN_H = 800
@@ -2513,6 +2518,17 @@ class MarikonosV4(tk.Tk):
     # ========================================================
 
     def _fetch_update_manifest(self):
+        """
+        Fetch the tiny public version.json file.
+
+        New format supports:
+          version
+          tag          (optional, defaults to v<version>)
+          asset_name   (optional, defaults to marikonos_launcher.exe)
+          download_url (optional fallback)
+          sha256
+          changelog
+        """
         request = urllib.request.Request(
             UPDATE_MANIFEST_URL,
             headers={
@@ -2520,24 +2536,198 @@ class MarikonosV4(tk.Tk):
                 "Cache-Control": "no-cache",
             },
         )
-        with urllib.request.urlopen(request, timeout=UPDATE_TIMEOUT) as response:
+
+        with urllib.request.urlopen(
+            request,
+            timeout=UPDATE_TIMEOUT
+        ) as response:
             raw = response.read().decode("utf-8")
+
         data = json.loads(raw)
 
         if not isinstance(data, dict):
-            raise ValueError("version.json doit contenir un objet JSON.")
+            raise ValueError(
+                "version.json doit contenir un objet JSON."
+            )
 
-        remote_version = str(data.get("version", "")).strip()
-        download_url = str(
-            data.get("download_url", data.get("download", ""))
+        remote_version = str(
+            data.get("version", "")
         ).strip()
 
         if not remote_version:
-            raise ValueError("Le champ 'version' manque dans version.json.")
+            raise ValueError(
+                "Le champ 'version' manque dans version.json."
+            )
+
+        fallback_url = str(
+            data.get(
+                "download_url",
+                data.get("download", "")
+            )
+        ).strip()
+
+        tag = str(
+            data.get("tag", f"v{remote_version}")
+        ).strip()
+
+        asset_name = str(
+            data.get("asset_name", "")
+        ).strip()
+
+        if not asset_name and fallback_url:
+            asset_name = Path(
+                urllib.parse.urlparse(fallback_url).path
+            ).name
+
+        if not asset_name:
+            asset_name = DEFAULT_UPDATE_ASSET
 
         data["version"] = remote_version
-        data["download_url"] = download_url
+        data["tag"] = tag
+        data["asset_name"] = asset_name
+        data["download_url"] = fallback_url
+
         return data
+
+    def _github_api_json(self, url):
+        """Read public GitHub API JSON without requiring a token."""
+        request = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": f"{APP_NAME}/{APP_VERSION}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "Cache-Control": "no-cache",
+            },
+        )
+
+        with urllib.request.urlopen(
+            request,
+            timeout=UPDATE_TIMEOUT
+        ) as response:
+            return json.loads(
+                response.read().decode("utf-8")
+            )
+
+    def _resolve_update_download_url(self, manifest):
+        """
+        Resolve the asset from the GitHub release itself.
+
+        This prevents HTTP 404 errors when the executable filename
+        changes slightly, because MARIKONOS can find the .exe asset
+        from the release instead of trusting only a hard-coded URL.
+        """
+        remote_version = str(
+            manifest.get("version", "")
+        ).strip()
+
+        tag = str(
+            manifest.get(
+                "tag",
+                f"v{remote_version}"
+            )
+        ).strip()
+
+        wanted_asset = str(
+            manifest.get(
+                "asset_name",
+                DEFAULT_UPDATE_ASSET
+            )
+        ).strip()
+
+        fallback_url = str(
+            manifest.get("download_url", "")
+        ).strip()
+
+        api_url = (
+            f"{GITHUB_API_BASE}/releases/tags/"
+            f"{urllib.parse.quote(tag, safe='')}"
+        )
+
+        api_error = None
+
+        try:
+            release = self._github_api_json(api_url)
+            assets = release.get("assets", [])
+
+            if not isinstance(assets, list):
+                assets = []
+
+            # 1) exact filename
+            for asset in assets:
+                if (
+                    str(asset.get("name", "")).lower()
+                    == wanted_asset.lower()
+                ):
+                    url = str(
+                        asset.get(
+                            "browser_download_url",
+                            ""
+                        )
+                    ).strip()
+
+                    if url:
+                        manifest[
+                            "resolved_asset_name"
+                        ] = asset.get("name", wanted_asset)
+                        return url
+
+            # 2) prefer any Windows executable if exact name changed
+            exe_assets = [
+                asset for asset in assets
+                if str(
+                    asset.get("name", "")
+                ).lower().endswith(".exe")
+            ]
+
+            if exe_assets:
+                asset = exe_assets[0]
+                url = str(
+                    asset.get(
+                        "browser_download_url",
+                        ""
+                    )
+                ).strip()
+
+                if url:
+                    manifest[
+                        "resolved_asset_name"
+                    ] = asset.get("name", "")
+                    return url
+
+            # Release exists but there is no .exe attached.
+            asset_names = [
+                str(asset.get("name", ""))
+                for asset in assets
+            ]
+
+            raise FileNotFoundError(
+                f"La Release {tag} existe, mais aucun fichier .exe "
+                f"n'est attaché. Assets trouvés : "
+                f"{', '.join(asset_names) or 'aucun'}"
+            )
+
+        except urllib.error.HTTPError as exc:
+            api_error = exc
+
+            if exc.code == 404:
+                api_error = FileNotFoundError(
+                    f"La Release GitHub {tag} est introuvable."
+                )
+
+        except Exception as exc:
+            api_error = exc
+
+        # Fallback for older manifests.
+        if fallback_url:
+            return fallback_url
+
+        if api_error:
+            raise api_error
+
+        raise FileNotFoundError(
+            "Impossible de trouver le fichier de mise à jour."
+        )
 
     def check_for_updates_silent(self):
         if self.update_in_progress:
@@ -2613,17 +2803,6 @@ class MarikonosV4(tk.Tk):
 
         remote = str(manifest.get("version", "?")).strip()
         changelog = str(manifest.get("changelog", "")).strip()
-        download_url = str(manifest.get("download_url", "")).strip()
-
-        if not download_url:
-            self.update_prompt_open = False
-            messagebox.showerror(
-                APP_NAME,
-                "Une nouvelle version existe, mais version.json ne contient "
-                "pas de 'download_url'.",
-            )
-            return
-
         # --------------------------------------------------------
         # Custom MARIKONOS update dialog
         # --------------------------------------------------------
@@ -2931,7 +3110,34 @@ class MarikonosV4(tk.Tk):
     def _download_update_worker(self, manifest, progress_window):
         temp_path = None
         try:
-            url = manifest["download_url"]
+            self.after(
+                0,
+                lambda: self._set_update_progress(
+                    4, "Recherche de la Release GitHub…"
+                ),
+            )
+
+            url = self._resolve_update_download_url(
+                manifest
+            )
+
+            resolved_name = str(
+                manifest.get(
+                    "resolved_asset_name",
+                    Path(
+                        urllib.parse.urlparse(url).path
+                    ).name
+                )
+            )
+
+            self.after(
+                0,
+                lambda n=resolved_name:
+                self._set_update_progress(
+                    8,
+                    f"Asset trouvé : {n}"
+                ),
+            )
             request = urllib.request.Request(
                 url,
                 headers={
@@ -3040,9 +3246,29 @@ class MarikonosV4(tk.Tk):
         except tk.TclError:
             pass
 
+        self.update_in_progress = False
+
+        clean_message = str(message).strip()
+
+        if (
+            "HTTP Error 404" in clean_message
+            or "404: Not Found" in clean_message
+        ):
+            clean_message = (
+                "GitHub renvoie 404 : le fichier demandé "
+                "n'existe pas à cette adresse.\n\n"
+                "Vérifie que :\n"
+                "• la Release existe avec le bon tag\n"
+                "• un fichier .exe est bien présent dans Assets\n"
+                "• version.json contient le bon numéro de version\n\n"
+                "Cette version de MARIKONOS tente aussi de retrouver "
+                "automatiquement l'asset .exe via l'API GitHub."
+            )
+
         messagebox.showerror(
             APP_NAME,
-            "La mise à jour a échoué.\n\n" + message,
+            "La mise à jour a échoué.\n\n"
+            + clean_message,
         )
 
     def _install_downloaded_update(self, downloaded_file, manifest, progress_window):
