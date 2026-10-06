@@ -18,7 +18,8 @@ import urllib.parse
 import re
 
 APP_NAME = "MARIKONOS"
-APP_VERSION = "4.3.2"
+APP_VERSION = "4.3.3"
+BUILD_ID = "2026-10-06.433"
 
 LOGIN_EMAIL = "mohibabibi@gmail.com"
 LOGIN_PASSWORD = "momo"
@@ -611,6 +612,9 @@ class MarikonosV4(tk.Tk):
 
         self.build_shell()
         self.fade_in()
+
+        # Verify whether the previous self-update actually replaced the EXE.
+        self.after(700, self._check_previous_update_result)
 
         # Check GitHub shortly after startup without blocking the UI.
         self.after(1800, self.check_for_updates_silent)
@@ -2514,6 +2518,86 @@ class MarikonosV4(tk.Tk):
         ).pack(pady=(12, 0))
 
     # ========================================================
+    # Update install state / loop protection
+    # ========================================================
+
+    def _update_state_dir(self):
+        base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+        path = Path(base) / "Marokinos"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _pending_update_file(self):
+        return self._update_state_dir() / "pending_update.json"
+
+    def _write_pending_update(self, version, target_path):
+        data = {
+            "target_version": str(version),
+            "target_path": str(target_path),
+            "started_at": time.time(),
+        }
+        self._pending_update_file().write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _clear_pending_update(self):
+        path = self._pending_update_file()
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError:
+            pass
+
+    def _check_previous_update_result(self):
+        """
+        Prevent endless update prompts.
+
+        If MARIKONOS restarted with the expected new version, the marker
+        disappears. If it restarted with the old version, automatic update
+        prompting is suspended and the UI explains that the EXE itself was
+        not replaced.
+        """
+        path = self._pending_update_file()
+        if not path.exists():
+            return
+
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            target = str(data.get("target_version", "")).strip()
+        except Exception:
+            self._clear_pending_update()
+            return
+
+        if not target:
+            self._clear_pending_update()
+            return
+
+        if not is_newer_version(target, APP_VERSION):
+            # We are now on target version or newer: installation succeeded.
+            self._clear_pending_update()
+            return
+
+        self.last_update_status = (
+            f"Installation précédente non appliquée ({APP_VERSION} → {target})"
+        )
+        self.update_prompt_open = True  # blocks the silent popup loop
+
+        self.after(
+            900,
+            lambda: messagebox.showwarning(
+                APP_NAME,
+                "MARIKONOS a redémarré, mais l'ancien EXE est toujours lancé.\n\n"
+                f"Version actuelle : {APP_VERSION}\n"
+                f"Version attendue : {target}\n\n"
+                "La mise à jour automatique a donc été arrêtée pour éviter "
+                "une boucle infinie.\n\n"
+                "Ferme MARIKONOS et remplace une seule fois l'ancien EXE "
+                "par le nouvel EXE de la Release GitHub."
+            )
+        )
+
+    # ========================================================
     # Auto updater
     # ========================================================
 
@@ -2730,7 +2814,7 @@ class MarikonosV4(tk.Tk):
         )
 
     def check_for_updates_silent(self):
-        if self.update_in_progress:
+        if self.update_in_progress or self.update_prompt_open:
             return
         threading.Thread(
             target=self._check_update_worker,
@@ -3272,7 +3356,25 @@ class MarikonosV4(tk.Tk):
         )
 
     def _install_downloaded_update(self, downloaded_file, manifest, progress_window):
-        current_file = Path(sys.argv[0]).resolve()
+        """
+        Robust Windows self-replacement.
+
+        Key differences from older builds:
+        - Uses sys.executable for a packaged EXE, not sys.argv[0].
+        - Waits for the exact MARIKONOS process PID to disappear.
+        - Retries replacement up to 45 times.
+        - Writes a log file in %LOCALAPPDATA%/Marokinos.
+        - Writes a pending marker so a failed replacement cannot cause
+          an endless update popup loop.
+        """
+        if getattr(sys, "frozen", False):
+            current_file = Path(sys.executable).resolve()
+        else:
+            current_file = Path(sys.argv[0]).resolve()
+
+        remote_version = str(
+            manifest.get("version", "")
+        ).strip()
 
         if os.name != "nt":
             self.update_in_progress = False
@@ -3281,18 +3383,29 @@ class MarikonosV4(tk.Tk):
                 progress_window.destroy()
             except tk.TclError:
                 pass
+
             messagebox.showinfo(
                 APP_NAME,
                 "Le téléchargement est terminé.\n\n"
                 f"Fichier : {downloaded_file}\n\n"
                 "Le remplacement automatique de cette version est configuré "
-                "pour Windows.",
+                "pour Windows."
             )
             return
 
+        # Save marker BEFORE shutting down.
+        self._write_pending_update(
+            remote_version,
+            current_file,
+        )
+
+        update_dir = self._update_state_dir()
+        log_file = update_dir / "update_install.log"
         helper = Path(tempfile.gettempdir()) / (
             f"marikonos_updater_{os.getpid()}.cmd"
         )
+
+        pid = os.getpid()
 
         if getattr(sys, "frozen", False):
             launch_line = f'start "" "{current_file}"'
@@ -3301,21 +3414,46 @@ class MarikonosV4(tk.Tk):
                 f'start "" "{Path(sys.executable).resolve()}" "{current_file}"'
             )
 
+        # CMD helper: wait for the current PID, then replace the exact EXE.
         batch = (
             "@echo off\n"
-            "setlocal\n"
+            "setlocal EnableExtensions\n"
+            f'set "TARGET={current_file}"\n'
+            f'set "NEWFILE={downloaded_file}"\n'
+            f'set "LOG={log_file}"\n'
+            f'set "OLDPID={pid}"\n'
+            'echo ==== MARIKONOS updater ==== > "%LOG%"\n'
+            'echo Target: %TARGET% >> "%LOG%"\n'
+            'echo New file: %NEWFILE% >> "%LOG%"\n'
+            'echo Waiting for PID %OLDPID%... >> "%LOG%"\n'
+            ":WAIT_PROCESS\n"
+            'tasklist /FI "PID eq %OLDPID%" 2>NUL | findstr /R /C:" %OLDPID% " >NUL\n'
+            "if not errorlevel 1 (\n"
+            "    timeout /t 1 /nobreak >nul\n"
+            "    goto WAIT_PROCESS\n"
+            ")\n"
+            'echo Old process stopped. >> "%LOG%"\n'
             "set /a TRY=0\n"
-            ":WAIT_FOR_APP\n"
-            "timeout /t 1 /nobreak >nul\n"
-            f'copy /Y "{downloaded_file}" "{current_file}" >nul 2>&1\n'
+            ":COPY_RETRY\n"
+            'copy /Y "%NEWFILE%" "%TARGET%" >> "%LOG%" 2>&1\n'
             "if errorlevel 1 (\n"
             "    set /a TRY+=1\n"
-            "    if %TRY% LSS 30 goto WAIT_FOR_APP\n"
-            "    exit /b 1\n"
+            '    echo Copy failed, try %TRY%. >> "%LOG%"\n'
+            "    if %TRY% GEQ 45 goto FAILED\n"
+            "    timeout /t 1 /nobreak >nul\n"
+            "    goto COPY_RETRY\n"
             ")\n"
-            f'del /Q "{downloaded_file}" >nul 2>&1\n'
+            'echo Copy succeeded. >> "%LOG%"\n'
+            'if not exist "%TARGET%" goto FAILED\n'
+            'del /Q "%NEWFILE%" >> "%LOG%" 2>&1\n'
+            'echo Relaunching. >> "%LOG%"\n'
             f"{launch_line}\n"
+            'echo Relaunch command sent. >> "%LOG%"\n'
             'del "%~f0"\n'
+            "exit /b 0\n"
+            ":FAILED\n"
+            'echo UPDATE FAILED. >> "%LOG%"\n'
+            "exit /b 1\n"
         )
 
         helper.write_text(batch, encoding="utf-8")
@@ -3325,13 +3463,23 @@ class MarikonosV4(tk.Tk):
         except tk.TclError:
             pass
 
-        subprocess.Popen(
-            ["cmd.exe", "/c", str(helper)],
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            close_fds=True,
-        )
+        try:
+            subprocess.Popen(
+                ["cmd.exe", "/c", str(helper)],
+                creationflags=getattr(
+                    subprocess,
+                    "CREATE_NO_WINDOW",
+                    0
+                ),
+                close_fds=True,
+            )
+        except Exception:
+            self._clear_pending_update()
+            raise
 
-        self.destroy()
+        # Make sure Tk finishes shutting down and the executable is unlocked.
+        self.after(120, self.destroy)
+
 
     # ========================================================
     # Settings
@@ -3436,7 +3584,7 @@ class MarikonosV4(tk.Tk):
 
         tk.Label(
             about,
-            text=f"MARIKONOS {APP_VERSION}\n"
+            text=f"MARIKONOS {APP_VERSION}\nBuild {BUILD_ID}\n"
                  "Tkinter standalone build\n"
                  "Mascot embedded directly into the Python file.",
             fg=MUTED, bg=PANEL_2,
